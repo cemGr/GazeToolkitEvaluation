@@ -64,9 +64,21 @@ python3 tools/evaluate_eye_movements_against_tobii.py \
   /tmp/gazedata-converted/toolkit-movements.csv
 ```
 
-The evaluator matches each Tobii sample timestamp to the GazeToolkit `EyeMovement` interval containing that
-timestamp and reports overall matched-sample accuracy, fixation precision/recall/F1, unmatched samples, and a
-confusion matrix for `Fixation`, `Saccade`, and `Unknown`.
+The evaluator is explicit about the event-to-sample bridge: Tobii rows are the sample-level reference,
+GazeToolkit `EyeMovement` rows are half-open intervals `[Timestamp, Timestamp + Duration)`, and each
+Tobii sample is assigned to the interval containing its timestamp before labels are compared. It reports
+overall matched-sample accuracy, fixation precision/recall/F1, unmatched samples, and a confusion matrix for
+`Fixation`, `Saccade`, and `Unknown`. Use `--explain` to print that method together with a run.
 
-For a fair interpretation, inspect boundary mismatches separately: a one-sample shift around fixation/saccade
-edges can reduce sample-level accuracy even when detected fixation intervals are practically equivalent.
+You can also omit the movement CSV to run a Tobii self-check. In that mode the evaluator creates intervals
+from consecutive Tobii labels and evaluates those intervals against the same Tobii samples. This is useful for
+checking the event-to-sample matching logic, but it is not a GazeToolkit filter evaluation:
+
+```bash
+python3 tools/evaluate_eye_movements_against_tobii.py --explain \
+  evaluationdata/IVT-Interpolation75ms-Eyeboth-NoNoise-VelocityWindow20-VelocityTreshold30.tsv
+```
+
+For a fair interpretation of real GazeToolkit output, inspect boundary mismatches separately: a one-sample
+shift around fixation/saccade edges can reduce sample-level accuracy even when detected fixation intervals
+are practically equivalent.

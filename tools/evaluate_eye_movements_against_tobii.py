@@ -42,7 +42,15 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("tobii_tsv", type=Path, help="Original Tobii TSV export with Eye movement type labels.")
-    parser.add_argument("movements_csv", type=Path, help="GazeToolkit EyeMovement CSV output.")
+    parser.add_argument(
+        "movements_csv",
+        nargs="?",
+        type=Path,
+        help=(
+            "GazeToolkit EyeMovement CSV output. If omitted, the script builds event intervals "
+            "from consecutive Tobii labels as a self-check of the event-to-sample evaluation."
+        ),
+    )
     parser.add_argument(
         "--timestamp-column",
         default=None,
@@ -67,6 +75,11 @@ def parse_args() -> argparse.Namespace:
         "--duration-column",
         default="Duration",
         help="GazeToolkit movement duration column in milliseconds (default: Duration).",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print the interval-to-sample matching method before the metrics.",
     )
     return parser.parse_args()
 
@@ -137,6 +150,33 @@ def load_tobii_samples(
     return samples
 
 
+def build_tobii_event_runs(samples: Sequence[Tuple[float, str]]) -> List[Tuple[float, float, str]]:
+    if not samples:
+        return []
+
+    deltas = [
+        current_timestamp - previous_timestamp
+        for (previous_timestamp, _), (current_timestamp, _) in zip(samples, samples[1:])
+        if current_timestamp > previous_timestamp
+    ]
+    fallback_duration = sorted(deltas)[len(deltas) // 2] if deltas else 1.0
+
+    movements: List[Tuple[float, float, str]] = []
+    start_timestamp, current_label = samples[0]
+
+    for timestamp, label in samples[1:]:
+        if label == current_label:
+            continue
+
+        movements.append((start_timestamp, timestamp, current_label))
+        start_timestamp = timestamp
+        current_label = label
+
+    last_timestamp = samples[-1][0]
+    movements.append((start_timestamp, last_timestamp + fallback_duration, current_label))
+    return movements
+
+
 def load_movements(
     path: Path, timestamp_column: str, movement_type_column: str, duration_column: str
 ) -> List[Tuple[float, float, str]]:
@@ -181,14 +221,24 @@ def safe_ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
 
 
-def print_results(confusion: Dict[str, Dict[str, int]], unmatched: int) -> None:
+def print_explanation() -> None:
+    print("Evaluation method:")
+    print("- Tobii rows are treated as sample-level ground truth using their timestamp and Eye movement type.")
+    print("- Event-based GazeToolkit movements are treated as half-open intervals [Timestamp, Timestamp + Duration).")
+    print("- Each Tobii sample is assigned to the latest movement interval whose start is <= sample timestamp.")
+    print("- If that interval also contains the sample timestamp, the labels are compared; otherwise the sample is unmatched.")
+    print("- Tobii EyesNotFound, Unclassified, empty, and unknown labels are normalized to GazeToolkit Unknown.")
+
+
+def print_results(confusion: Dict[str, Dict[str, int]], unmatched: int, movement_count: int) -> None:
     total_matched = sum(sum(row.values()) for row in confusion.values())
     correct = sum(confusion.get(label, {}).get(label, 0) for label in LABELS)
     total = total_matched + unmatched
 
+    print(f"Movement intervals: {movement_count}")
     print(f"Samples total: {total}")
-    print(f"Samples matched to toolkit movements: {total_matched}")
-    print(f"Samples without matching toolkit movement: {unmatched}")
+    print(f"Samples matched to movement intervals: {total_matched}")
+    print(f"Samples without matching movement interval: {unmatched}")
     print(f"Overall matched-sample accuracy: {safe_ratio(correct, total_matched):.4f}")
 
     fixation_tp = confusion.get("Fixation", {}).get("Fixation", 0)
@@ -226,14 +276,23 @@ def evaluate(samples: Iterable[Tuple[float, str]], movements: Sequence[Tuple[flo
 def main() -> int:
     args = parse_args()
     samples = load_tobii_samples(args.tobii_tsv, args.timestamp_column, args.tobii_label_column)
-    movements = load_movements(
-        args.movements_csv,
-        args.movement_timestamp_column,
-        args.movement_type_column,
-        args.duration_column,
-    )
+    if args.movements_csv is None:
+        movements = build_tobii_event_runs(samples)
+        print("Movement source: Tobii consecutive label runs (self-check, not a GazeToolkit filter result)")
+    else:
+        movements = load_movements(
+            args.movements_csv,
+            args.movement_timestamp_column,
+            args.movement_type_column,
+            args.duration_column,
+        )
+        print(f"Movement source: {args.movements_csv}")
+
+    if args.explain:
+        print_explanation()
+
     confusion, unmatched = evaluate(samples, movements)
-    print_results(confusion, unmatched)
+    print_results(confusion, unmatched, len(movements))
     return 0
 
 
